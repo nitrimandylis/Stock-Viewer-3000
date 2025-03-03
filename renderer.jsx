@@ -19,56 +19,47 @@ const App = () => {
     { label: 'This Year', value: 'year' }
   ];
 
-  // Placeholder for fetching stock data
-  const fetchStockData = async () => {
-    try {
-      // TODO: Implement real API call
-      const mockData = [
-        { symbol: 'AAPL', price: 150.25, change: 2.5 },
-        { symbol: 'GOOGL', price: 2750.80, change: -1.2 },
-        { symbol: 'MSFT', price: 310.15, change: 0.8 }
-      ];
-      setStocks(mockData);
-    } catch (error) {
-      console.error('Error fetching stock data:', error);
-    }
+  // Fetch stock data using IPC
+  const fetchStockData = () => {
+    setIsLoading(true);
+    window.api.send('fetch-stocks');
   };
 
-  const fetchHistoricalData = async (symbol, period) => {
-    try {
-      // TODO: Implement real API call
-      const mockHistorical = {
-        labels: ['9:30', '10:00', '10:30', '11:00', '11:30', '12:00'],
-        prices: [150.25, 151.30, 149.80, 152.00, 151.50, 150.75]
-      };
-      return mockHistorical;
-    } catch (error) {
-      console.error(`Error fetching historical data for ${symbol}:`, error);
-      return { labels: [], prices: [] };
-    }
+  const fetchHistoricalData = (symbol, period) => {
+    return new Promise((resolve) => {
+      window.api.send('fetch-historical-data', { symbol, period });
+      // Set up a one-time listener to resolve the promise when data is received
+      window.api.receive('historical-data', (data) => {
+        resolve(data);
+      });
+    });
   };
 
   const renderChart = async (stock, period) => {
-    if (!stock || isLoading() || !chartRef()) return;
-    
+    if (!stock || !chartRef()) {
+      setError('Invalid chart parameters');
+      return;
+    }
+
     try {
       setIsLoading(true);
       setError(null);
-      
-      // Safely destroy previous chart instance if it exists
+    
+      // Ensure previous chart is properly destroyed
       if (chartInstance()) {
         chartInstance().destroy();
         setChartInstance(null);
+        await new Promise(resolve => setTimeout(resolve, 0)); // Allow DOM to update
       }
-
+    
       const data = await fetchHistoricalData(stock.symbol, period);
       
-      const ctx = chartRef().getContext('2d');
+      // Verify canvas context is available
+      const ctx = chartRef()?.getContext('2d');
       if (!ctx) {
-        setError('Could not get canvas context');
-        return;
+        throw new Error('Canvas context not available');
       }
-
+    
       const newChart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -83,6 +74,9 @@ const App = () => {
           }]
         },
         options: {
+          animation: {
+            duration: 0 // Disable animations for better performance
+          },
           responsive: true,
           maintainAspectRatio: false,
           plugins: {
@@ -113,23 +107,112 @@ const App = () => {
           }
         }
       });
-
+    
       setChartInstance(newChart);
     } catch (error) {
-      setError(`Error in chart rendering process: ${error.message}`);
-      console.error('Error in chart rendering process:', error);
+      console.error('Chart rendering error:', error);
+      setError(`Failed to render chart: ${error.message}`);
     } finally {
       setIsLoading(false);
     }
   };
 
   onMount(() => {
+    // Set up IPC listeners
+    window.api.receive('stock-data', (data) => {
+      setStocks(data);
+      setIsLoading(false);
+    });
+
+    window.api.receive('historical-data', (data) => {
+      if (chartRef() && selectedStock()) {
+        // Update chart with received data
+        updateChartWithData(data);
+      }
+    });
+
+    window.api.receive('api-error', (error) => {
+      setError(error.message);
+      setIsLoading(false);
+    });
+
     fetchStockData();
     const interval = setInterval(fetchStockData, 60000); // Refresh every minute
     onCleanup(() => {
       clearInterval(interval);
     });
   });
+
+  // Helper function to update chart with data
+  const updateChartWithData = (data) => {
+    try {
+      if (!chartRef()) return;
+      
+      const ctx = chartRef().getContext('2d');
+      if (!ctx) return;
+      
+      // Destroy previous chart if it exists
+      if (chartInstance()) {
+        chartInstance().destroy();
+        setChartInstance(null);
+      }
+      
+      const newChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: data.labels,
+          datasets: [{
+            label: selectedStock().symbol,
+            backgroundColor: 'rgba(102, 126, 234, 0.25)',
+            borderColor: 'rgba(102, 126, 234, 1)',
+            pointBackgroundColor: 'rgba(102, 126, 234, 1)',
+            data: data.prices,
+            tension: 0.4
+          }]
+        },
+        options: {
+          animation: {
+            duration: 0 // Disable animations for better performance
+          },
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: true,
+              labels: {
+                color: 'rgb(229, 231, 235)'
+              }
+            }
+          },
+          scales: {
+            y: {
+              grid: {
+                color: 'rgba(229, 231, 235, 0.1)'
+              },
+              ticks: {
+                color: 'rgb(229, 231, 235)'
+              }
+            },
+            x: {
+              grid: {
+                color: 'rgba(229, 231, 235, 0.1)'
+              },
+              ticks: {
+                color: 'rgb(229, 231, 235)'
+              }
+            }
+          }
+        }
+      });
+      
+      setChartInstance(newChart);
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Error updating chart:', error);
+      setError(`Failed to update chart: ${error.message}`);
+      setIsLoading(false);
+    }
+  };
 
   createEffect(() => {
     const stock = selectedStock();
